@@ -1,0 +1,3 @@
+MONGODB_URI=mongodb://localhost:27017/exam_platform_db
+JWT_SECRET=please_change_this_secret_in_production
+NEXT_PUBLIC_APP_URL=http://localhost:3000
