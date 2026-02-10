@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { AlertTriangle, Clock, CheckCircle, ArrowLeft, Camera, AlertOctagon } from 'lucide-react';
+import { AlertTriangle, Clock, CheckCircle, ArrowLeft, Camera, AlertOctagon, Users, UserX, EyeOff, Smartphone } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Submission {
@@ -20,7 +20,7 @@ interface Submission {
         title: string;
     };
     score: number;
-    flags: Array<{ type: string; message?: string; timestamp: string }>;
+    flags: Array<{ type: string; message?: string; timestamp: string; hash?: string; previousHash?: string }>;
     captures: Array<{ image: string; reason: string; timestamp: string }>;
     createdAt: string;
 }
@@ -122,6 +122,7 @@ export default function SubmissionDetailsPage({ params }: { params: Promise<{ id
                 <TabsList>
                     <TabsTrigger value="overview">Proctoring Timeline</TabsTrigger>
                     <TabsTrigger value="snapshots">Snapshots Gallery</TabsTrigger>
+                    <TabsTrigger value="logs">Zero-Trust Logs (Blockchain)</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="overview" className="space-y-4">
@@ -132,22 +133,47 @@ export default function SubmissionDetailsPage({ params }: { params: Promise<{ id
                         </CardHeader>
                         <CardContent>
                             <div className="relative border-l border-gray-200 dark:border-gray-700 ml-3 space-y-6">
-                                {submission.flags?.map((flag, idx) => (
-                                    <div key={idx} className="mb-8 ml-6">
-                                        <span className="absolute flex items-center justify-center w-6 h-6 bg-red-100 rounded-full -left-3 ring-8 ring-white dark:ring-gray-900 dark:bg-red-900">
-                                            <AlertTriangle className="w-3 h-3 text-red-800 dark:text-red-300" />
-                                        </span>
-                                        <h3 className="flex items-center mb-1 text-lg font-semibold text-gray-900 dark:text-white">
-                                            {flag.type.replace(/_/g, ' ')}
-                                        </h3>
-                                        <time className="block mb-2 text-sm font-normal leading-none text-gray-400 dark:text-gray-500">
-                                            {new Date(flag.timestamp).toLocaleString()}
-                                        </time>
-                                        <p className="mb-4 text-base font-normal text-gray-500 dark:text-gray-400">
-                                            {flag.message || 'Suspicious activity detected.'}
-                                        </p>
-                                    </div>
-                                ))}
+                                {submission.flags?.map((flag, idx) => {
+                                    const getFlagIcon = (type: string) => {
+                                        switch (type) {
+                                            case 'NO_FACE': return <UserX className="w-4 h-4 text-red-600" />;
+                                            case 'MULTIPLE_FACES': return <Users className="w-4 h-4 text-red-600" />;
+                                            case 'LOOKING_AWAY': return <EyeOff className="w-4 h-4 text-orange-600" />;
+                                            case 'PROHIBITED_OBJECT': return <Smartphone className="w-4 h-4 text-red-600" />;
+                                            case 'TAB_SWITCH': return <AlertTriangle className="w-4 h-4 text-yellow-600" />;
+                                            case 'FULLSCREEN_EXIT': return <AlertOctagon className="w-4 h-4 text-orange-600" />;
+                                            default: return <AlertTriangle className="w-4 h-4 text-gray-600" />;
+                                        }
+                                    };
+                                    const getBgColor = (type: string) => {
+                                        switch (type) {
+                                            case 'NO_FACE': return 'bg-red-100 dark:bg-red-900/30';
+                                            case 'MULTIPLE_FACES': return 'bg-red-100 dark:bg-red-900/30';
+                                            case 'PROHIBITED_OBJECT': return 'bg-red-100 dark:bg-red-900/30';
+                                            case 'LOOKING_AWAY': return 'bg-orange-100 dark:bg-orange-900/30';
+                                            case 'TAB_SWITCH': return 'bg-yellow-100 dark:bg-yellow-900/30';
+                                            case 'FULLSCREEN_EXIT': return 'bg-orange-100 dark:bg-orange-900/30';
+                                            default: return 'bg-gray-100 dark:bg-gray-800';
+                                        }
+                                    };
+
+                                    return (
+                                        <div key={idx} className="relative pl-8 pb-8 border-l last:border-0 border-gray-200 dark:border-gray-700">
+                                            <span className={`absolute flex items-center justify-center w-8 h-8 rounded-full -left-4 ring-4 ring-white dark:ring-background ${getBgColor(flag.type)}`}>
+                                                {getFlagIcon(flag.type)}
+                                            </span>
+                                            <h3 className="flex items-center mb-1 text-lg font-semibold">
+                                                {flag.type.replace(/_/g, ' ')}
+                                            </h3>
+                                            <time className="block mb-2 text-sm font-normal leading-none text-muted-foreground">
+                                                {new Date(flag.timestamp).toLocaleString()}
+                                            </time>
+                                            <p className="text-base font-normal text-muted-foreground">
+                                                {flag.message || 'Suspicious activity detected.'}
+                                            </p>
+                                        </div>
+                                    )
+                                })}
                                 {(!submission.flags || submission.flags.length === 0) && (
                                     <div className="ml-6 py-4 text-green-600 flex items-center">
                                         <CheckCircle className="mr-2 h-5 w-5" /> No violations recorded. Clean session.
@@ -190,6 +216,48 @@ export default function SubmissionDetailsPage({ params }: { params: Promise<{ id
                                     No snapshots were captured during this session.
                                 </div>
                             )}
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                <TabsContent value="logs">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Zero-Trust Cryptographic Chain</CardTitle>
+                            <CardDescription>
+                                Immutable log of events secured by SHA-256 hashing. Each event is cryptographically linked to the previous one, ensuring data integrity.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="space-y-4">
+                                {submission.flags?.map((flag, idx) => (
+                                    <div key={idx} className="border p-4 rounded-md bg-slate-50 dark:bg-slate-900 shadow-sm font-mono text-xs overflow-hidden">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <Badge variant="outline" className="uppercase">{flag.type}</Badge>
+                                            <span className="text-gray-500">{new Date(flag.timestamp).toLocaleString()}</span>
+                                        </div>
+                                        <div className="grid grid-cols-[100px_1fr] gap-2 items-center">
+                                            <span className="text-gray-500 font-semibold">Message:</span>
+                                            <span className="truncate text-gray-700 dark:text-gray-300">{flag.message}</span>
+
+                                            <span className="text-blue-600 font-semibold">Prev Hash:</span>
+                                            <span className="truncate text-blue-600 bg-blue-50 dark:bg-blue-900/20 p-1 rounded">
+                                                {flag.previousHash || 'Genesis Block'}
+                                            </span>
+
+                                            <span className="text-green-600 font-semibold">Current Hash:</span>
+                                            <span className="truncate text-green-600 bg-green-50 dark:bg-green-900/20 p-1 rounded font-bold">
+                                                {flag.hash || 'Calculating...'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                                {(!submission.flags || submission.flags.length === 0) && (
+                                    <div className="text-center py-8 text-gray-500">
+                                        No logs generated for this session.
+                                    </div>
+                                )}
+                            </div>
                         </CardContent>
                     </Card>
                 </TabsContent>

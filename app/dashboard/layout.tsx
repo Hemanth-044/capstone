@@ -8,6 +8,7 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Menu, LayoutDashboard, FilePlus, LogOut, User, Calendar as CalendarIcon, BookOpen, FileText, HelpCircle, BarChart2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ModeToggle } from '@/components/mode-toggle';
+import AIChatbot from '@/components/AIChatbot';
 
 export default function DashboardLayout({
     children,
@@ -160,6 +161,8 @@ export default function DashboardLayout({
             <div className="flex-1 overflow-auto p-8 pt-16 md:pt-8 w-full">
                 {children}
             </div>
+            {/* AI Chatbot - Pass role (default candidate, or examiner) */}
+            <AIChatbot role={userRole === 'examiner' ? 'examiner' : 'candidate'} />
         </div>
     );
 }

@@ -18,9 +18,11 @@ const SubmissionSchema = new mongoose.Schema({
     },
     score: { type: Number, default: 0 },
     flags: [{
-        type: { type: String }, // e.g., 'TAB_SWITCH', etc.
+        type: { type: String },
         message: String,
-        timestamp: { type: Date, default: Date.now }
+        timestamp: { type: Date, default: Date.now },
+        hash: { type: String },
+        previousHash: { type: String },
     }],
     captures: [{
         image: String, // Base64 string

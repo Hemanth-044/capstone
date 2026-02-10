@@ -9,7 +9,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { AlertTriangle, Clock, Maximize, AlertCircle } from 'lucide-react';
+import { AlertTriangle, Clock, Maximize, AlertCircle, Eye, Users, UserX, EyeOff, Smartphone, BookOpen, Monitor } from 'lucide-react';
+import * as faceapi from '@vladmandic/face-api';
+import * as tf from '@tensorflow/tfjs';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import { useEnvironmentSecurity } from '@/hooks/use-environment-security';
+import { useKeystrokeDynamics } from '@/hooks/use-keystroke-dynamics';
 
 export default function ExamPage({ params }: { params: Promise<{ id: string }> }) {
     const router = useRouter();
@@ -21,8 +26,17 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
     const [timeLeft, setTimeLeft] = useState(0);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
     const [stream, setStream] = useState<MediaStream | null>(null);
-    const flags = useRef<{ type: string; timestamp: Date }[]>([]);
+    const flags = useRef<{ type: string; message?: string; timestamp: Date }[]>([]);
+    const captures = useRef<{ image: string; reason: string; timestamp: Date }[]>([]);
+    const [modelsLoaded, setModelsLoaded] = useState(false);
+    const [status, setStatus] = useState<string>('Initializing...');
+    const [headPose, setHeadPose] = useState<{ direction: string; color: string }>({ direction: 'Center', color: 'text-green-500' });
+    const detectionInterval = useRef<NodeJS.Timeout | null>(null);
+    const objectInterval = useRef<NodeJS.Timeout | null>(null);
+    const [objectModel, setObjectModel] = useState<cocoSsd.ObjectDetection | null>(null);
+    const detectedObjects = useRef<cocoSsd.DetectedObject[]>([]);
 
     // Unwrap params
     const [examId, setExamId] = useState<string>('');
@@ -37,6 +51,26 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
         const fetchExam = async () => {
             try {
                 const token = localStorage.getItem('token');
+
+                // Load ML Models
+                const loadModels = async () => {
+                    const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+                    try {
+                        await Promise.all([
+                            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                            tf.ready(), // Ensure TF is ready
+                        ]);
+                        const loadedCoco = await cocoSsd.load();
+                        setObjectModel(loadedCoco);
+                        setModelsLoaded(true);
+                        console.log('ML Models Loaded (Face + COCO-SSD)');
+                    } catch (e) {
+                        console.error('Error loading ML models:', e);
+                        toast.error('Failed to load proctoring AI. Please refresh.');
+                    }
+                };
+                loadModels();
 
                 // Check submission status first
                 const statusRes = await fetch(`/api/exams/${examId}/check-status`, {
@@ -110,6 +144,30 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
         }
     }, []);
 
+    // Security Hook (Moved here to access captureSnapshot)
+    const handleSecurityViolation = useCallback((type: string, message: string) => {
+        if (!started) return;
+
+        // Debounce
+        const lastFlag = flags.current[flags.current.length - 1];
+        if (!lastFlag || lastFlag.type !== type || (new Date().getTime() - new Date(lastFlag.timestamp).getTime() > 2000)) {
+            flags.current.push({ type, message, timestamp: new Date() });
+            captureSnapshot(`Security Violation: ${message}`);
+        }
+    }, [started, captureSnapshot]);
+
+    const securityStatus = useEnvironmentSecurity(handleSecurityViolation);
+
+    // Biometrics Hook
+    const { status: bioStatus, confidence: bioConfidence } = useKeystrokeDynamics(started);
+
+    // Flag Biometric Mismatch
+    useEffect(() => {
+        if (bioStatus === 'Mismatch' && bioConfidence < 50) {
+            handleSecurityViolation('BIOMETRIC_MISMATCH', `Typing pattern mismatch (Confidence: ${Math.round(bioConfidence)}%)`);
+        }
+    }, [bioStatus, bioConfidence, handleSecurityViolation]);
+
     // Proctoring: Fullscreen
     const enterFullscreen = useCallback(() => {
         const elem = document.documentElement;
@@ -140,6 +198,12 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
             setStream(mediaStream);
             setStarted(true);
             enterFullscreen();
+            // Wait for video to be ready
+            if (videoRef.current) {
+                videoRef.current.onloadedmetadata = () => {
+                    videoRef.current!.play();
+                };
+            }
         } catch (err) {
             toast.error('Camera/Microphone permission required for proctoring.');
         }
@@ -152,11 +216,180 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
     }, [started, stream]);
 
 
+    useEffect(() => {
+        if (!started || !objectModel || !videoRef.current) return;
+
+        const runObjectDetection = async () => {
+            if (videoRef.current && videoRef.current.readyState === 4 && !videoRef.current.paused && !videoRef.current.ended) {
+                try {
+                    const predictions = await objectModel.detect(videoRef.current);
+                    detectedObjects.current = predictions;
+
+                    const prohibited = predictions.filter(p => ['cell phone', 'book', 'laptop'].includes(p.class));
+
+                    if (prohibited.length > 0) {
+                        const item = prohibited[0].class;
+                        // Debounce
+                        const lastFlag = flags.current[flags.current.length - 1];
+                        if (!lastFlag || lastFlag.type !== 'PROHIBITED_OBJECT' || (new Date().getTime() - new Date(lastFlag.timestamp).getTime() > 5000)) {
+                            toast.error(`Prohibited Object Detected: ${item.toUpperCase()}`, { icon: <AlertTriangle className="text-red-600" /> });
+                            flags.current.push({ type: 'PROHIBITED_OBJECT', message: `Detected: ${item}`, timestamp: new Date() });
+                            captureSnapshot(`Prohibited Object: ${item}`);
+                        }
+                    }
+
+                } catch (err) {
+                    console.error('Object Detection Error:', err);
+                }
+            }
+        };
+
+        const intervalId = setInterval(runObjectDetection, 2000); // Check objects every 2s
+        objectInterval.current = intervalId;
+        return () => clearInterval(intervalId);
+    }, [started, objectModel, captureSnapshot]);
+
+
+    useEffect(() => {
+        if (!started || !modelsLoaded || !videoRef.current || !canvasRef.current) return;
+
+        const runDetection = async () => {
+            // Ensure video is playing and has dimensions
+            if (videoRef.current && videoRef.current.readyState === 4 && !videoRef.current.paused && !videoRef.current.ended) {
+
+                try {
+                    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+                    const detections = await faceapi.detectAllFaces(videoRef.current, options).withFaceLandmarks();
+
+                    const displaySize = {
+                        width: videoRef.current.videoWidth,
+                        height: videoRef.current.videoHeight
+                    };
+
+                    // Resize and Draw Mesh
+                    faceapi.matchDimensions(canvasRef.current!, displaySize);
+                    const resizedDetections = faceapi.resizeResults(detections, displaySize);
+
+                    // Clear previous drawings
+                    const ctx = canvasRef.current!.getContext('2d');
+                    if (ctx) {
+                        ctx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
+
+                        // Draw Face Landmarks
+                        faceapi.draw.drawFaceLandmarks(canvasRef.current!, resizedDetections);
+
+                        // Draw Object Bounding Boxes
+                        detectedObjects.current.forEach(obj => {
+                            const [x, y, width, height] = obj.bbox;
+                            const isProhibited = ['cell phone', 'book', 'laptop'].includes(obj.class);
+
+                            ctx.strokeStyle = isProhibited ? 'red' : 'blue';
+                            ctx.lineWidth = 2;
+                            ctx.strokeRect(x, y, width, height);
+
+                            ctx.fillStyle = isProhibited ? 'red' : 'blue';
+                            ctx.font = '12px Arial';
+                            ctx.fillText(`${obj.class} (${Math.round(obj.score * 100)}%)`, x, y > 10 ? y - 5 : 10);
+                        });
+                    }
+
+                    if (detections.length === 0) {
+                        setStatus('No Face Detected');
+                        setHeadPose({ direction: 'No Face', color: 'text-red-500' });
+                        // No Face
+                        const lastFlag = flags.current[flags.current.length - 1];
+                        if (!lastFlag || lastFlag.type !== 'NO_FACE' || (new Date().getTime() - new Date(lastFlag.timestamp).getTime() > 5000)) {
+                            console.warn('Flagging: No Face');
+                            toast.warning('No Face Detected!', { icon: <UserX className="text-red-500" /> });
+                            flags.current.push({ type: 'NO_FACE', timestamp: new Date() });
+                        }
+                    } else if (detections.length > 1) {
+                        setStatus('Multiple Faces Detected');
+                        setHeadPose({ direction: 'Multiple Faces', color: 'text-red-500' });
+                        // Multiple Faces
+                        const lastFlag = flags.current[flags.current.length - 1];
+                        if (!lastFlag || lastFlag.type !== 'MULTIPLE_FACES' || (new Date().getTime() - new Date(lastFlag.timestamp).getTime() > 5000)) {
+                            console.warn('Flagging: Multiple Faces');
+                            toast.error('Multiple Faces Detected!', { icon: <Users className="text-red-500" /> });
+                            flags.current.push({ type: 'MULTIPLE_FACES', timestamp: new Date() });
+                            captureSnapshot('Multiple Faces');
+                        }
+                    } else {
+                        // Head Pose Estimation
+                        const landmarks = detections[0].landmarks;
+                        const nose = landmarks.getNose();
+                        const jaw = landmarks.getJawOutline();
+                        const leftEye = landmarks.getLeftEye();
+                        const rightEye = landmarks.getRightEye();
+
+                        const noseX = nose[3].x;
+                        const noseY = nose[3].y;
+                        const leftJawX = jaw[0].x;
+                        const rightJawX = jaw[16].x;
+                        const faceWidth = rightJawX - leftJawX;
+
+                        // Pitch Calculation (Vertical)
+                        // Compare nose tip Y to the average Y of eyes
+                        const avgEyeY = (leftEye[0].y + rightEye[3].y) / 2;
+                        const noseToEyeDist = noseY - avgEyeY;
+                        // Normalize by face height (approx via width or jaw-chin)
+                        // Simple ratio: strictness depends on camera angle
+                        const pitchRatio = noseToEyeDist / faceWidth;
+
+                        const relativeNoseX = (noseX - leftJawX) / faceWidth;
+
+                        let direction = 'Center';
+                        let isViolation = false;
+
+                        if (relativeNoseX < 0.25) {
+                            direction = 'Looking Right >>'; // Mirrored?
+                            isViolation = true;
+                        } else if (relativeNoseX > 0.75) {
+                            direction = '<< Looking Left';
+                            isViolation = true;
+                        } else if (pitchRatio < 0.2) { // Nose too close to eyes -> Looking Up
+                            direction = 'Looking Up ^^';
+                            isViolation = true;
+                        } else if (pitchRatio > 0.6) { // Nose far down -> Looking Down
+                            direction = 'Looking Down vv';
+                            isViolation = true;
+                        }
+
+                        setStatus(isViolation ? 'Violation Detected' : 'Active Proctoring');
+                        setHeadPose({
+                            direction: direction,
+                            color: isViolation ? 'text-orange-500' : 'text-green-500'
+                        });
+
+                        if (isViolation) {
+                            const lastFlag = flags.current[flags.current.length - 1];
+                            if (!lastFlag || lastFlag.type !== 'LOOKING_AWAY' || (new Date().getTime() - new Date(lastFlag.timestamp).getTime() > 3000)) {
+                                console.warn('Flagging: Looking Away', relativeNoseX);
+                                toast.warning(`Looking Away (${direction})`, { icon: <EyeOff className="text-orange-500" /> });
+                                flags.current.push({ type: 'LOOKING_AWAY', timestamp: new Date() });
+                                captureSnapshot(`Looking Away: ${direction}`);
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error('Face Detection Error:', err);
+                }
+            }
+        };
+
+        const intervalId = setInterval(runDetection, 100); // Faster refresh for mesh (10fps)
+        detectionInterval.current = intervalId;
+
+        return () => clearInterval(intervalId);
+    }, [started, modelsLoaded, captureSnapshot, videoRef, canvasRef]);
+
     const submitExam = useCallback(async () => {
         // Stop media stream
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
         }
+        if (detectionInterval.current) clearInterval(detectionInterval.current);
+        if (objectInterval.current) clearInterval(objectInterval.current);
 
         try {
             const userStr = localStorage.getItem('user');
@@ -234,7 +467,11 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
                     {/* Proctoring View */}
                     <div className="relative w-32 h-24 bg-black rounded overflow-hidden shadow-lg border-2 border-red-500">
                         <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-                        <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                        <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full opacity-70" />
+                        {/* Status Overlay */}
+                        <div className="absolute bottom-0 left-0 w-full bg-black/60 text-[10px] text-white text-center py-0.5 truncate">
+                            <span className={headPose.color}>{headPose.direction}</span>
+                        </div>
                     </div>
 
                     <div className={`text-xl font-mono font-bold ${timeLeft < 300 ? 'text-red-500' : 'text-gray-700'}`}>
@@ -254,6 +491,24 @@ export default function ExamPage({ params }: { params: Promise<{ id: string }> }
                         <Button variant="outline" size="sm" className="ml-auto" onClick={enterFullscreen}>Enable <Maximize className="ml-2 w-3 h-3" /></Button>
                     </div>
                 )}
+
+                {securityStatus.isVM && (
+                    <div className="bg-orange-100 border border-orange-400 text-orange-700 px-4 py-3 rounded relative mb-4 flex items-center">
+                        <AlertTriangle className="mr-2" />
+                        <span><strong>Warning:</strong> Virtual Machine environment detected. This session is being flagged for review.</span>
+                    </div>
+                )}
+
+                {/* Biometric Status Indicator (For Demo Purposes) */}
+                <div className="flex items-center space-x-2 text-xs text-gray-400 mb-2 justify-end">
+                    <span>Biometric Status:</span>
+                    <span className={`font-bold ${bioStatus === 'Calibrating' ? 'text-blue-500' :
+                            bioStatus === 'Verifying' ? 'text-green-500' :
+                                'text-red-500'
+                        }`}>
+                        {bioStatus} {bioStatus !== 'Calibrating' && `(${Math.round(bioConfidence)}%)`}
+                    </span>
+                </div>
 
                 <Card>
                     <CardHeader>

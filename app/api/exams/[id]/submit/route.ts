@@ -55,12 +55,30 @@ export async function POST(
             // Descriptive are left for manual or 0 by default here
         });
 
+        // Zero-Trust: Cryptographic Log Chaining
+        let previousHash = 'genesis-' + id; // Initial hash linked to exam ID
+        const crypto = require('crypto');
+
+        const securedFlags = (flags || []).map((flag: any) => {
+            const dataToHash = `${flag.type}${flag.message}${new Date(flag.timestamp).toISOString()}${previousHash}`;
+            const hash = crypto.createHash('sha256').update(dataToHash).digest('hex');
+
+            const securedFlag = {
+                ...flag,
+                previousHash,
+                hash
+            };
+            previousHash = hash; // Chain it
+            return securedFlag;
+        });
+
         const submission = await Submission.create({
             examId: id,
             studentId: decoded.id,
             answers,
             score,
-            flags: flags || [],
+            flags: securedFlags,
+            captures: body.captures || [],
         });
 
         return NextResponse.json({ message: 'Submission received', score }, { status: 201 });
